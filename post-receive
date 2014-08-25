@@ -1,0 +1,47 @@
+#!/bin/bash
+# This post-recieve file is Suitable for Recursive Checkouts (Such as etc files or webtrees with submodules)
+declare -A SERVICE_PATHS
+
+# Branch and Target Items You May Want to Change
+branch=master
+TARGET_DIR='/'
+TOP_DIR='etc'
+
+# Services to restart with corresponding paths
+SERVICE_PATHS["iptables/"]="iptables-persistent"
+
+# Determine Other Variables Automagically
+export GIT_DIR=$PWD
+project=${PWD##*/}
+hostname=`hostname|cut -d"." -f1`
+TEMP_CHECKOUT_PATH="/tmp/$project"
+
+# Check out the repo to a temporary location and copy it to the target path,
+# removing git directories before copying.
+sudo rm -rf "$TEMP_CHECKOUT_PATH"
+sudo mkdir "$TEMP_CHECKOUT_PATH"
+sudo git clone -b $branch --recursive "$GIT_DIR" "$TEMP_CHECKOUT_PATH/$TOP_DIR"
+sudo find "$TEMP_CHECKOUT_PATH/$TOP_DIR" -name '.git*' -print0 | xargs -0 sudo rm -r;
+sudo cp -R "$TEMP_CHECKOUT_PATH/$TOP_DIR" "$TARGET_DIR"
+sudo rm -rf "$TEMP_CHECKOUT_PATH"
+
+# Determine what files we actually deployed
+read oldrev newrev refname
+
+# Check updated paths and restart any registered services
+for i in "${!SERVICE_PATHS[@]}"
+do
+  result=`git diff $oldrev $newrev -- $i`
+  if [ "$result" != '' ]
+  then
+    echo ${SERVICE_PATHS[$i]}
+    sudo service ${SERVICE_PATHS[$i]} restart
+  fi
+done
+
+# Send a success message to SNS outlining details
+git log --pretty=format:"%H : %s [%ae]" $oldrev^..$newrev | \
+while read line ; do
+    /var/opt/ec2-sns-sender/sns_send -t arn:aws:sns:us-east-1:344420214229:unb_lib_git_pushes -s "[$hostname][$project][PUSH]" -m "[$hostname][$project][PUSH] http://github.com/unb-libraries/$project/commit/$line"
+    sleep 0.5
+done
